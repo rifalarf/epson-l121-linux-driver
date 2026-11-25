@@ -1,0 +1,463 @@
+#!/usr/bin/python3
+"""
+l121-panel - Compact Qt6 Control Panel for Epson L121 / L120 Series
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+DEFAULT_QUEUE = "L120-Series"
+UI_ASSET_DIRS = [
+    Path("/usr/share/epson-inkjet-printer-filter/ui"),
+    Path(__file__).resolve().parent / "assets" / "ui",
+]
+
+
+def find_ui_asset(name: str) -> str:
+    for d in UI_ASSET_DIRS:
+        p = d / name
+        if p.exists():
+            return str(p)
+    return ""
+
+
+def find_l121ctl() -> str:
+    local = Path(__file__).resolve().parent / "l121ctl"
+    if local.exists():
+        return str(local)
+    return shutil.which("l121ctl") or "/usr/bin/l121ctl"
+
+
+class CommandWorker(QThread):
+    finished = pyqtSignal(int, str, str)
+
+    def __init__(self, cmd: list[str], parent=None):
+        super().__init__(parent)
+        self.cmd = cmd
+
+    def run(self):
+        try:
+            proc = subprocess.run(self.cmd, capture_output=True, text=True, timeout=30)
+            self.finished.emit(proc.returncode, proc.stdout, proc.stderr)
+        except Exception as e:
+            self.finished.emit(1, "", str(e))
+
+
+class L121Panel(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.queue_name = DEFAULT_QUEUE
+        self.workers: list[CommandWorker] = []
+
+        self.setWindowTitle("Epson L121 / L120 Control Panel")
+        self.setMinimumSize(490, 560)
+        self.resize(500, 580)
+
+        icon_path = find_ui_asset("epson-l121-panel.png")
+        if icon_path:
+            self.setWindowIcon(QIcon(icon_path))
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # --- Top Status Card ---
+        status_box = QGroupBox("Printer Status (USB 04b8:005e)")
+        status_lay = QVBoxLayout(status_box)
+
+        top_row = QHBoxLayout()
+        self.badge = QLabel("Checking...")
+        self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.badge.setFixedWidth(160)
+        self.badge.setStyleSheet(
+            "padding: 5px 10px; border-radius: 6px; font-weight: bold; "
+            "background-color: #45475a; color: #ffffff;"
+        )
+        self.info_label = QLabel("Querying printer...")
+        self.info_label.setWordWrap(True)
+        top_row.addWidget(self.badge)
+        top_row.addWidget(self.info_label, 1)
+        status_lay.addLayout(top_row)
+
+        btn_row = QHBoxLayout()
+        self.btn_refresh = QPushButton("Refresh Status")
+        self.btn_refresh.clicked.connect(self.refresh_status)
+        self.btn_cancel = QPushButton("Cancel Stuck Jobs")
+        self.btn_cancel.clicked.connect(self.cancel_jobs)
+        btn_row.addWidget(self.btn_refresh)
+        btn_row.addWidget(self.btn_cancel)
+        status_lay.addLayout(btn_row)
+        root.addWidget(status_box)
+
+        # --- Tabs ---
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs, 1)
+
+        self.tabs.addTab(self._build_maintenance_tab(), "Maintenance")
+        self.tabs.addTab(self._build_print_tab(), "Quick Settings & Print")
+        self.tabs.addTab(self._build_align_tab(), "Head Alignment")
+
+        # --- Footer Feedback ---
+        self.footer = QLabel("Ready.")
+        self.footer.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Sunken)
+        self.footer.setContentsMargins(6, 4, 6, 4)
+        root.addWidget(self.footer)
+
+        self.refresh_status()
+        self.load_cups_options()
+
+    def _run_cmd(self, cmd: list[str], on_done, busy_msg: str):
+        self.footer.setText(busy_msg)
+        w = CommandWorker(cmd, self)
+        self.workers.append(w)
+
+        def _cleanup(rc, out, err):
+            if w in self.workers:
+                self.workers.remove(w)
+            on_done(rc, out, err)
+
+        w.finished.connect(_cleanup)
+        w.start()
+
+    def _set_badge(self, text: str, bg: str):
+        self.badge.setText(text)
+        self.badge.setStyleSheet(
+            f"padding: 5px 10px; border-radius: 6px; font-weight: bold; "
+            f"background-color: {bg}; color: #ffffff;"
+        )
+
+    def refresh_status(self):
+        self.btn_refresh.setEnabled(False)
+        self._run_cmd([find_l121ctl(), "status", "--json"], self._on_status, "Querying USB printer...")
+
+    def _on_status(self, rc: int, out: str, err: str):
+        self.btn_refresh.setEnabled(True)
+        if rc != 0:
+            self._set_badge("Disconnected", "#c0392b")
+            self.info_label.setText(err.strip() or "Printer not found / permission denied.")
+            self.footer.setText("Status check failed.")
+            return
+        try:
+            data = json.loads(out)
+        except Exception:
+            self._set_badge("Unknown", "#7f8c8d")
+            self.info_label.setText(out.strip())
+            return
+
+        st2 = data.get("parsed_st2", {})
+        state = st2.get("state")
+        err_txt = st2.get("error")
+        dev_id = data.get("ieee1284_id", "")
+
+        mdl = "EPSON L120/L121 Series"
+        for part in dev_id.split(";"):
+            if part.startswith("MDL:"):
+                mdl = part[4:]
+
+        if err_txt:
+            self._set_badge(err_txt[:22], "#d35400")
+            self.info_label.setText(f"{mdl}\n{err_txt}")
+        elif state:
+            color = "#27ae60" if "Ready" in state else "#2980b9"
+            self._set_badge(state, color)
+            self.info_label.setText(f"{mdl} — {state}")
+        else:
+            self._set_badge("USB Connected", "#27ae60")
+            self.info_label.setText(f"{mdl}\n(Idle / IEEE-1284 OK)")
+        self.footer.setText("Status updated.")
+
+    def cancel_jobs(self):
+        self._run_cmd(
+            ["cancel", "-a", self.queue_name],
+            lambda rc, _o, e: self.footer.setText(
+                f"Cleared queue {self.queue_name}." if rc == 0 else f"Cancel failed: {e.strip()}"
+            ),
+            f"Canceling jobs on {self.queue_name}...",
+        )
+
+    # --- Tab 1: Maintenance ---
+    def _build_maintenance_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+        lay.setSpacing(10)
+
+        grid = QGridLayout()
+        btn_nozzle = QPushButton("Nozzle Check\n(Print Test + FW & Page Count)")
+        btn_nozzle.setMinimumHeight(48)
+        btn_nozzle.clicked.connect(lambda: self._maint("nozzle-check", "Sending Nozzle Check..."))
+
+        btn_clean = QPushButton("Head Cleaning\n(Standard Unclog)")
+        btn_clean.setMinimumHeight(48)
+        btn_clean.clicked.connect(lambda: self._maint("clean", "Sending Head Cleaning..."))
+
+        btn_power = QPushButton("Power Ink Flushing\n(Deep Clean - Heavy Ink)")
+        btn_power.setMinimumHeight(48)
+        btn_power.clicked.connect(self._power_clean)
+
+        btn_roller = QPushButton("Roller Cleaning\n(Paper Feed Path)")
+        btn_roller.setMinimumHeight(48)
+        btn_roller.clicked.connect(lambda: self._maint("roller-clean", "Sending Roller Cleaning..."))
+
+        grid.addWidget(btn_nozzle, 0, 0)
+        grid.addWidget(btn_clean, 0, 1)
+        grid.addWidget(btn_power, 1, 0)
+        grid.addWidget(btn_roller, 1, 1)
+        lay.addLayout(grid)
+
+        # Nozzle reference guide
+        ref_box = QGroupBox("Nozzle Check Visual Guide")
+        ref_lay = QHBoxLayout(ref_box)
+        for fname, caption in [
+            ("NOZZLEGOODPATTERN.PNG", "Good (No Gaps) -> Done"),
+            ("NOZZLEBADPATTERN.PNG", "Broken Lines -> Run Cleaning"),
+        ]:
+            col = QVBoxLayout()
+            img = QLabel()
+            img.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            p = find_ui_asset(fname)
+            if p:
+                img.setPixmap(QPixmap(p).scaledToHeight(58, Qt.TransformationMode.SmoothTransformation))
+            lbl = QLabel(caption)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            col.addWidget(img)
+            col.addWidget(lbl)
+            ref_lay.addLayout(col)
+        lay.addWidget(ref_box)
+        lay.addStretch(1)
+        return tab
+
+    def _maint(self, subcmd: str, msg: str):
+        self._run_cmd(
+            [find_l121ctl(), subcmd],
+            lambda rc, o, e: self._show_maint_result(rc, o, e),
+            msg,
+        )
+
+    def _power_clean(self):
+        ans = QMessageBox.question(
+            self,
+            "Confirm Power Ink Flushing",
+            "Power Ink Flushing consumes significant ink and should only be used if standard Head Cleaning fails.\n\nProceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            self._run_cmd(
+                [find_l121ctl(), "power-clean", "--yes"],
+                lambda rc, o, e: self._show_maint_result(rc, o, e),
+                "Sending Power Ink Flushing...",
+            )
+
+    def _show_maint_result(self, rc: int, out: str, err: str):
+        if rc == 0:
+            self.footer.setText(out.strip().splitlines()[-1] if out.strip() else "Command sent.")
+        else:
+            self.footer.setText("Command failed.")
+            QMessageBox.warning(self, "Maintenance Error", err.strip() or out.strip())
+
+    # --- Tab 2: Quick Settings & Print ---
+    def _build_print_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+
+        form_box = QGroupBox(f"CUPS Default Options ({self.queue_name})")
+        form = QFormLayout(form_box)
+
+        self.cb_quality = QComboBox()
+        self.cb_quality.addItem("Standard (360 x 360 DPI)", "Standard")
+        self.cb_quality.addItem("High (720 x 720 DPI VSD)", "High")
+
+        self.cb_paper = QComboBox()
+        for code, label in [
+            ("A4", "A4 (210 x 297 mm)"),
+            ("215x330mm", "F4 / Folio (215 x 330 mm)"),
+            ("Letter", "Letter (8.5 x 11 in)"),
+            ("Legal", "Legal (8.5 x 14 in)"),
+            ("B5", "B5 (182 x 257 mm)"),
+            ("A5", "A5 (148 x 210 mm)"),
+            ("4x6", "4R Photo (4 x 6 in)"),
+            ("5x7", "5R Photo (5 x 7 in)"),
+            ("210x600mm", "Banner (210 x 600 mm)"),
+            ("210x1117.6mm", "Banner Max (210 x 1117.6 mm)"),
+        ]:
+            self.cb_paper.addItem(label, code)
+
+        self.cb_color = QComboBox()
+        self.cb_color.addItem("Color", "Color")
+        self.cb_color.addItem("Grayscale", "Grayscale")
+
+        self.cb_cmode = QComboBox()
+        self.cb_cmode.addItem("EPSON Vivid", "EPSONVivid")
+        self.cb_cmode.addItem("Adobe RGB", "AdobeRGB")
+
+        self.chk_mirror = QCheckBox("Mirror Image (Transfer / Sablon)")
+        self.chk_rotate = QCheckBox("Rotate 180 Degrees")
+
+        form.addRow("Print Quality:", self.cb_quality)
+        form.addRow("Paper Size:", self.cb_paper)
+        form.addRow("Color:", self.cb_color)
+        form.addRow("Color Mode:", self.cb_cmode)
+        form.addRow("", self.chk_mirror)
+        form.addRow("", self.chk_rotate)
+        lay.addWidget(form_box)
+
+        actions = QHBoxLayout()
+        btn_save = QPushButton("Save as CUPS Default")
+        btn_save.clicked.connect(self.save_cups_options)
+        btn_print = QPushButton("Print File with These Settings...")
+        btn_print.clicked.connect(self.print_file_dialog)
+        actions.addWidget(btn_save)
+        actions.addWidget(btn_print)
+        lay.addLayout(actions)
+        lay.addStretch(1)
+        return tab
+
+    def _current_opts(self) -> list[str]:
+        return [
+            "-o", f"PrintQuality={self.cb_quality.currentData()}",
+            "-o", f"PageSize={self.cb_paper.currentData()}",
+            "-o", f"Color={self.cb_color.currentData()}",
+            "-o", f"CorrectionColor={self.cb_cmode.currentData()}",
+            "-o", f"MirrorImage={'On' if self.chk_mirror.isChecked() else 'Off'}",
+            "-o", f"Rotate180={'On' if self.chk_rotate.isChecked() else 'Off'}",
+        ]
+
+    def load_cups_options(self):
+        def _parse(rc, out, _err):
+            if rc != 0:
+                return
+            for line in out.splitlines():
+                if ":" not in line:
+                    continue
+                key_part, vals = line.split(":", 1)
+                key = key_part.split("/")[0]
+                active = next((v[1:] for v in vals.split() if v.startswith("*")), None)
+                if not active:
+                    continue
+                if key == "PrintQuality":
+                    idx = self.cb_quality.findData(active)
+                    if idx >= 0: self.cb_quality.setCurrentIndex(idx)
+                elif key == "PageSize":
+                    idx = self.cb_paper.findData(active)
+                    if idx >= 0: self.cb_paper.setCurrentIndex(idx)
+                elif key == "Color":
+                    idx = self.cb_color.findData(active)
+                    if idx >= 0: self.cb_color.setCurrentIndex(idx)
+                elif key == "CorrectionColor":
+                    idx = self.cb_cmode.findData(active)
+                    if idx >= 0: self.cb_cmode.setCurrentIndex(idx)
+                elif key == "MirrorImage":
+                    self.chk_mirror.setChecked(active == "On")
+                elif key == "Rotate180":
+                    self.chk_rotate.setChecked(active == "On")
+
+        self._run_cmd(["lpoptions", "-p", self.queue_name, "-l"], _parse, "Loading CUPS options...")
+
+    def save_cups_options(self):
+        cmd = ["lpoptions", "-p", self.queue_name] + self._current_opts()
+        self._run_cmd(
+            cmd,
+            lambda rc, _o, e: self.footer.setText(
+                f"Saved defaults to {self.queue_name}." if rc == 0 else f"Save failed: {e.strip()}"
+            ),
+            "Saving CUPS defaults...",
+        )
+
+    def print_file_dialog(self):
+        fpath, _ = QFileDialog.getOpenFileName(
+            self, "Select Document or Image to Print", str(Path.home()),
+            "Printable Files (*.pdf *.png *.jpg *.jpeg *.ps *.txt);;All Files (*)"
+        )
+        if not fpath:
+            return
+        cmd = ["lp", "-d", self.queue_name] + self._current_opts() + [fpath]
+        self._run_cmd(
+            cmd,
+            lambda rc, o, e: self.footer.setText(o.strip() if rc == 0 else f"Print failed: {e.strip()}"),
+            f"Sending {os.path.basename(fpath)} to {self.queue_name}...",
+        )
+
+    # --- Tab 3: Head Alignment ---
+    def _build_align_tab(self) -> QWidget:
+        tab = QWidget()
+        lay = QVBoxLayout(tab)
+
+        step_box = QGroupBox("1. Print Alignment Patterns")
+        step_lay = QHBoxLayout(step_box)
+        b1 = QPushButton("Print Step 1 (Bi-D / VSD)")
+        b1.clicked.connect(lambda: self._run_cmd([find_l121ctl(), "align", "--step", "1"], self._show_maint_result, "Printing Step 1..."))
+        b2 = QPushButton("Print Step 2 (PF A4)")
+        b2.clicked.connect(lambda: self._run_cmd([find_l121ctl(), "align", "--step", "2-a4"], self._show_maint_result, "Printing Step 2..."))
+        step_lay.addWidget(b1)
+        step_lay.addWidget(b2)
+        lay.addWidget(step_box)
+
+        val_box = QGroupBox("2. Write Best Pattern Numbers to Printer EEPROM")
+        val_form = QFormLayout(val_box)
+        self.spins = []
+        for idx, (label, hi, default) in enumerate([
+            ("Pattern #1 (Bi-D, 1-5):", 5, 3),
+            ("Pattern #2 (VSD1, 1-7):", 7, 4),
+            ("Pattern #3 (VSD2, 1-7):", 7, 4),
+            ("Pattern #4 (Color1, 1-7):", 7, 4),
+            ("Pattern #5 (Color2, 1-7):", 7, 4),
+        ]):
+            sp = QSpinBox()
+            sp.setRange(1, hi)
+            sp.setValue(default)
+            self.spins.append(sp)
+            val_form.addRow(label, sp)
+
+        btn_apply = QPushButton("Write Alignment to EEPROM")
+        btn_apply.clicked.connect(self._apply_alignment)
+        val_form.addRow(btn_apply)
+        lay.addWidget(val_box)
+        lay.addStretch(1)
+        return tab
+
+    def _apply_alignment(self):
+        vals = [str(sp.value()) for sp in self.spins]
+        self._run_cmd(
+            [find_l121ctl(), "align", "--set-gap"] + vals,
+            self._show_maint_result,
+            "Writing alignment values to EEPROM...",
+        )
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("l121-panel")
+    win = L121Panel()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

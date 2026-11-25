@@ -1,11 +1,11 @@
 pkgname=epson-l121-driver-unlocked
 pkgver=2.60.1.0.1
-pkgrel=1
-pkgdesc="Unlocked native Linux CUPS driver, ICC profile, and maintenance CLI (l121ctl) for Epson L121 / L120 Series"
+pkgrel=2
+pkgdesc="Unlocked native Linux CUPS driver, ICC profile, maintenance CLI (l121ctl), and Qt6 control panel (l121-panel) for Epson L121 / L120 Series"
 arch=('x86_64')
 url="https://download.ebz.epson.net/dsc/search/01/search/?OSC=LX"
 license=('LGPL-2.1-or-later' 'custom:Epson End User Software License Agreement')
-depends=('cups' 'glibc' 'gcc-libs' 'libcups' 'libjpeg-turbo' 'libusb' 'python')
+depends=('cups' 'glibc' 'gcc-libs' 'libcups' 'libjpeg-turbo' 'libusb' 'python' 'python-pyqt6')
 makedepends=('autoconf' 'automake' 'libtool' 'gcc' 'make' 'curl' 'libarchive')
 conflicts=('epson-inkjet-printer-201310w' 'epson-inkjet-printer-filter')
 provides=('epson-inkjet-printer-201310w' 'epson-inkjet-printer-filter')
@@ -78,9 +78,18 @@ package() {
   install -Dm644 "${startdir}/EPSON_L121_Unlocked.ppd" \
     "${pkgdir}/usr/share/cups/model/epson-l121/EPSON_L121_Unlocked.ppd"
 
-  # 6. Maintenance & Telemetry CLI + udev rules
+  # 6. Maintenance & Telemetry CLI + Qt6 Control Panel + udev rules
   install -Dm755 "${startdir}/l121ctl" \
     "${pkgdir}/usr/bin/l121ctl"
+  install -Dm755 "${startdir}/l121-panel" \
+    "${pkgdir}/usr/bin/l121-panel"
+  install -d "${pkgdir}/usr/share/epson-inkjet-printer-filter/ui"
+  install -m644 "${startdir}/assets/ui/"* \
+    "${pkgdir}/usr/share/epson-inkjet-printer-filter/ui/"
+  install -Dm644 "${startdir}/assets/ui/epson-l121-panel.png" \
+    "${pkgdir}/usr/share/pixmaps/epson-l121-panel.png"
+  install -Dm644 "${startdir}/epson-l121-panel.desktop" \
+    "${pkgdir}/usr/share/applications/epson-l121-panel.desktop"
   install -Dm644 "${startdir}/99-epson-l121.rules" \
     "${pkgdir}/usr/lib/udev/rules.d/99-epson-l121.rules"
 

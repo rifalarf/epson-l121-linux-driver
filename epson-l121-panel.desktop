@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Epson L121 Control Panel
+GenericName=Printer Maintenance & Settings
+Comment=Status, Nozzle Check, Head Cleaning, Alignment & CUPS Quick Settings for Epson L121 / L120
+Exec=/usr/bin/l121-panel
+Icon=epson-l121-panel
+Terminal=false
+Categories=Utility;HardwareSettings;Printing;Qt;
+Keywords=epson;l120;l121;printer;nozzle;cleaning;cups;

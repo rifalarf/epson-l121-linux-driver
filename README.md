@@ -6,7 +6,8 @@ Native Linux CUPS driver, official ICC color profile, unlocked PPD, and USB main
 - **True 720×720 DPI VSD & Official ICC Profile:** Uses Epson's native `libEpson_201310w.so` halftone engine + `Epson IJ Printer 07.icc` extracted from the Windows x64 v2.60 driver.
 - **Full Mechanical Paper Sizes:** Unlocks **F4 / Folio (215×330 mm)**, B5, A5, A6, 4R, 5R, Envelopes, **Banner sizes up to 210×1117.6 mm**, and Custom sizes (`89×127 mm` to `215.9×1117.6 mm`), while removing erroneous A2/A3/B3 entries from Epson's stock Linux PPD.
 - **Production Print Features:** `MirrorImage` (sublimation/transfer), `Rotate180`, `PosterPrinting` (2×1 to 4×4), `AdobeRGB` & `EPSONVivid` color modes, and watermarks.
-- **Native USB Maintenance (`l121ctl`):**
+- **Native USB Maintenance (`l121ctl`) & Qt6 Control Panel (`l121-panel`):**
+  - `l121-panel` — Compact KDE/Qt6 GUI for live status, 1-click nozzle check/cleaning/power-flush, CUPS quick settings & printing, and EEPROM head alignment
   - `l121ctl status` — Live IEEE-1284 ID & `@BDC ST2` telemetry
   - `l121ctl nozzle-check` — Nozzle check pattern + FW version, Serial & Page Counter
   - `l121ctl clean` / `power-clean` — Standard head cleaning & Power Ink Flushing
