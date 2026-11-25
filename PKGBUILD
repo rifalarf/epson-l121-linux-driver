@@ -1,6 +1,6 @@
 pkgname=epson-l121-driver-unlocked
 pkgver=2.60.1.0.1
-pkgrel=2
+pkgrel=3
 pkgdesc="Unlocked native Linux CUPS driver, ICC profile, maintenance CLI (l121ctl), and Qt6 control panel (l121-panel) for Epson L121 / L120 Series"
 arch=('x86_64')
 url="https://download.ebz.epson.net/dsc/search/01/search/?OSC=LX"
@@ -88,10 +88,16 @@ package() {
     "${pkgdir}/usr/share/epson-inkjet-printer-filter/ui/"
   install -Dm644 "${startdir}/assets/ui/epson-l121-panel.png" \
     "${pkgdir}/usr/share/pixmaps/epson-l121-panel.png"
+  install -Dm644 "${startdir}/assets/ui/epson-l121-panel-16.png" \
+    "${pkgdir}/usr/share/icons/hicolor/16x16/apps/epson-l121-panel.png"
+  install -Dm644 "${startdir}/assets/ui/epson-l121-panel-32.png" \
+    "${pkgdir}/usr/share/icons/hicolor/32x32/apps/epson-l121-panel.png"
+  install -Dm644 "${startdir}/assets/ui/epson-l121-panel-48.png" \
+    "${pkgdir}/usr/share/icons/hicolor/48x48/apps/epson-l121-panel.png"
   install -Dm644 "${startdir}/epson-l121-panel.desktop" \
     "${pkgdir}/usr/share/applications/epson-l121-panel.desktop"
-  install -Dm644 "${startdir}/99-epson-l121.rules" \
-    "${pkgdir}/usr/lib/udev/rules.d/99-epson-l121.rules"
+  install -Dm644 "${startdir}/69-epson-l121.rules" \
+    "${pkgdir}/usr/lib/udev/rules.d/69-epson-l121.rules"
 
   # 7. Licenses
   install -Dm644 "${drv}/COPYING.EPSON" \

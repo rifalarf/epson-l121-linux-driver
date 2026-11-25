@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -94,15 +94,21 @@ class L121Panel(QMainWindow):
         status_lay = QVBoxLayout(status_box)
 
         top_row = QHBoxLayout()
+        self.printer_thumb = QLabel()
+        self.printer_thumb.setFixedSize(64, 52)
+        self.printer_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._set_printer_thumb("B.PNG")
+
         self.badge = QLabel("Checking...")
         self.badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.badge.setFixedWidth(160)
+        self.badge.setFixedWidth(150)
         self.badge.setStyleSheet(
             "padding: 5px 10px; border-radius: 6px; font-weight: bold; "
             "background-color: #45475a; color: #ffffff;"
         )
         self.info_label = QLabel("Querying printer...")
         self.info_label.setWordWrap(True)
+        top_row.addWidget(self.printer_thumb)
         top_row.addWidget(self.badge)
         top_row.addWidget(self.info_label, 1)
         status_lay.addLayout(top_row)
@@ -122,7 +128,7 @@ class L121Panel(QMainWindow):
         root.addWidget(self.tabs, 1)
 
         self.tabs.addTab(self._build_maintenance_tab(), "Maintenance")
-        self.tabs.addTab(self._build_print_tab(), "Quick Settings & Print")
+        self.tabs.addTab(self._build_print_tab(), "Quick Settings && Print")
         self.tabs.addTab(self._build_align_tab(), "Head Alignment")
 
         # --- Footer Feedback ---
@@ -147,6 +153,11 @@ class L121Panel(QMainWindow):
         w.finished.connect(_cleanup)
         w.start()
 
+    def _set_printer_thumb(self, fname: str):
+        p = find_ui_asset(fname)
+        if p:
+            self.printer_thumb.setPixmap(QPixmap(p).scaled(60, 48, Qt.TransformationMode.SmoothTransformation))
+
     def _set_badge(self, text: str, bg: str):
         self.badge.setText(text)
         self.badge.setStyleSheet(
@@ -162,7 +173,8 @@ class L121Panel(QMainWindow):
         self.btn_refresh.setEnabled(True)
         if rc != 0:
             self._set_badge("Disconnected", "#c0392b")
-            self.info_label.setText(err.strip() or "Printer not found / permission denied.")
+            self._set_printer_thumb("R.PNG")
+            self.info_label.setText(err.strip() or f"Printer not found / error (exit {rc}).")
             self.footer.setText("Status check failed.")
             return
         try:
@@ -184,14 +196,17 @@ class L121Panel(QMainWindow):
 
         if err_txt:
             self._set_badge(err_txt[:22], "#d35400")
+            self._set_printer_thumb("Y.PNG")
             self.info_label.setText(f"{mdl}\n{err_txt}")
         elif state:
             color = "#27ae60" if "Ready" in state else "#2980b9"
             self._set_badge(state, color)
+            self._set_printer_thumb("B.PNG")
             self.info_label.setText(f"{mdl} — {state}")
         else:
             self._set_badge("USB Connected", "#27ae60")
-            self.info_label.setText(f"{mdl}\n(Idle / IEEE-1284 OK)")
+            self._set_printer_thumb("B.PNG")
+            self.info_label.setText(f"{mdl}\nIdle / IEEE-1284 OK")
         self.footer.setText("Status updated.")
 
     def cancel_jobs(self):
@@ -210,7 +225,7 @@ class L121Panel(QMainWindow):
         lay.setSpacing(10)
 
         grid = QGridLayout()
-        btn_nozzle = QPushButton("Nozzle Check\n(Print Test + FW & Page Count)")
+        btn_nozzle = QPushButton("Nozzle Check\n(Print Test + FW && Page Count)")
         btn_nozzle.setMinimumHeight(48)
         btn_nozzle.clicked.connect(lambda: self._maint("nozzle-check", "Sending Nozzle Check..."))
 
@@ -454,6 +469,7 @@ class L121Panel(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("l121-panel")
+    QGuiApplication.setDesktopFileName("epson-l121-panel")
     win = L121Panel()
     win.show()
     sys.exit(app.exec())

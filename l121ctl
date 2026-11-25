@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 l121ctl - Native Linux Maintenance & Telemetry CLI for Epson L121 / L120 Series (04b8:005e)
 Uses libusb-1.0 directly via ctypes (no external Python dependencies).
@@ -53,11 +53,41 @@ ER_CODES = {
 class LibUSB:
     def __init__(self):
         self.lib = ctypes.CDLL("libusb-1.0.so.0")
-        self.ctx = ctypes.c_void_p()
+        c_vp = ctypes.c_void_p
+        c_i = ctypes.c_int
+        c_u8 = ctypes.c_uint8
+        c_u16 = ctypes.c_uint16
+        c_u32 = ctypes.c_uint32
+        c_p = ctypes.POINTER
+
+        self.lib.libusb_init.argtypes = [c_p(c_vp)]
+        self.lib.libusb_init.restype = c_i
+        self.lib.libusb_exit.argtypes = [c_vp]
+        self.lib.libusb_exit.restype = None
+        self.lib.libusb_open_device_with_vid_pid.argtypes = [c_vp, c_u16, c_u16]
+        self.lib.libusb_open_device_with_vid_pid.restype = c_vp
+        self.lib.libusb_close.argtypes = [c_vp]
+        self.lib.libusb_close.restype = None
+        self.lib.libusb_kernel_driver_active.argtypes = [c_vp, c_i]
+        self.lib.libusb_kernel_driver_active.restype = c_i
+        self.lib.libusb_detach_kernel_driver.argtypes = [c_vp, c_i]
+        self.lib.libusb_detach_kernel_driver.restype = c_i
+        self.lib.libusb_attach_kernel_driver.argtypes = [c_vp, c_i]
+        self.lib.libusb_attach_kernel_driver.restype = c_i
+        self.lib.libusb_claim_interface.argtypes = [c_vp, c_i]
+        self.lib.libusb_claim_interface.restype = c_i
+        self.lib.libusb_release_interface.argtypes = [c_vp, c_i]
+        self.lib.libusb_release_interface.restype = c_i
+        self.lib.libusb_control_transfer.argtypes = [c_vp, c_u8, c_u8, c_u16, c_u16, c_vp, c_u16, c_u32]
+        self.lib.libusb_control_transfer.restype = c_i
+        self.lib.libusb_bulk_transfer.argtypes = [c_vp, c_u8, c_vp, c_i, c_p(c_i), c_u32]
+        self.lib.libusb_bulk_transfer.restype = c_i
+        self.lib.libusb_error_name.argtypes = [c_i]
+        self.lib.libusb_error_name.restype = ctypes.c_char_p
+
+        self.ctx = c_vp()
         if self.lib.libusb_init(ctypes.byref(self.ctx)) != 0:
             raise RuntimeError("Failed to initialize libusb-1.0")
-        self.lib.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
-        self.lib.libusb_error_name.restype = ctypes.c_char_p
         self.handle = None
         self.reattach = False
 
