@@ -142,6 +142,49 @@
 *CloseUI: *PrintQuality
 
 
+*OpenUI *ThickPaper/Thick Paper (220gsm): PickOne
+*OrderDependency: 25 AnySetup *ThickPaper
+*DefaultThickPaper: Off
+*ja.Translation ThickPaper/Thick Paper (220gsm):""
+*en.Translation ThickPaper/Thick Paper (220gsm):""
+*nl.Translation ThickPaper/Thick Paper (220gsm):""
+*fr.Translation ThickPaper/Thick Paper (220gsm):""
+*de.Translation ThickPaper/Thick Paper (220gsm):""
+*it.Translation ThickPaper/Thick Paper (220gsm):""
+*pt.Translation ThickPaper/Thick Paper (220gsm):""
+*es.Translation ThickPaper/Thick Paper (220gsm):""
+*ru.Translation ThickPaper/Thick Paper (220gsm):""
+*ko.Translation ThickPaper/Thick Paper (220gsm):""
+*zh.Translation ThickPaper/Thick Paper (220gsm):""
+*zh_TW.Translation ThickPaper/Thick Paper (220gsm):""
+*ThickPaper Off/Off (Standard): ""
+*ja.ThickPaper Off/Off (Standard):""
+*en.ThickPaper Off/Off (Standard):""
+*nl.ThickPaper Off/Off (Standard):""
+*fr.ThickPaper Off/Off (Standard):""
+*de.ThickPaper Off/Off (Standard):""
+*it.ThickPaper Off/Off (Standard):""
+*pt.ThickPaper Off/Off (Standard):""
+*es.ThickPaper Off/Off (Standard):""
+*ru.ThickPaper Off/Off (Standard):""
+*ko.ThickPaper Off/Off (Standard):""
+*zh.ThickPaper Off/Off (Standard):""
+*zh_TW.ThickPaper Off/Off (Standard):""
+*ThickPaper On/On (220gsm Thick / Slow Feed): ""
+*ja.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*en.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*nl.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*fr.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*de.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*it.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*pt.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*es.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*ru.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*ko.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*zh.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*zh_TW.ThickPaper On/On (220gsm Thick / Slow Feed):""
+*CloseUI: *ThickPaper
+
 *OpenUI *PageSize/Size: PickOne
 *OrderDependency: 30 AnySetup *PageSize
 *DefaultPageSize: A4

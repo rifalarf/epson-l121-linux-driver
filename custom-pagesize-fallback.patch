@@ -1,6 +1,48 @@
 --- a/src/raster_to_epson.c
 +++ b/src/raster_to_epson.c
-@@ -308,6 +308,20 @@
+@@ -144,8 +144,29 @@
+ }
+ 
+ 
++static int g_thick_paper = 0;
++static int g_thick_injected = 0;
++
+ static EPS_INT32 printStream (EPS_INT8* data, EPS_INT32 size)
+ {
++	if (g_thick_paper && !g_thick_injected && size >= 4) {
++		static const unsigned char thick_seq[] = {
++			'P','H', 0x02, 0x00, 0x00, 0x01,
++			'S','N', 0x03, 0x00, 0x00, 0x01, 0x01,
++			'S','N', 0x03, 0x00, 0x00, 0x00, 0x01,
++			'P','C', 0x02, 0x00, 0x00, 0x00
++		};
++		EPS_INT32 k;
++		for (k = 0; k <= size - 4; k++) {
++			if ((unsigned char)data[k] == 0x1b && data[k+1] == 0x00 && data[k+2] == 0x00 && data[k+3] == 0x00) {
++				if (k > 0) fwrite(data, 1, k, stdout);
++				fwrite(thick_seq, 1, sizeof(thick_seq), stdout);
++				fwrite(data + k, 1, size - k, stdout);
++				g_thick_injected = 1;
++				return size;
++			}
++		}
++	}
+ 	return fwrite(data, 1, size, stdout);
+ }
+ 
+@@ -296,6 +317,11 @@
+ 		}
+ 
+ 		debuglog(("Job Options =%s", JobOptions));
++		{
++			char *tp = get_option_for_job("ThickPaper");
++			if (tp == NULL) tp = get_default_choice("ThickPaper");
++			if (tp != NULL && strcasecmp(tp, "On") == 0) g_thick_paper = 1;
++		}
+ 
+ 		for (i = 0; i < optionCount; i++) {
+ 			option = optionList[i];
+@@ -308,6 +334,20 @@
  				}
  			}
  

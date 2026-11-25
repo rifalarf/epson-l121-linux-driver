@@ -350,6 +350,7 @@ class L121Panel(QMainWindow):
         self.cb_cmode.addItem("EPSON Vivid", "EPSONVivid")
         self.cb_cmode.addItem("Adobe RGB", "AdobeRGB")
 
+        self.chk_thick = QCheckBox("Thick Paper Mode (220 gsm / Slow Feed)")
         self.chk_mirror = QCheckBox("Mirror Image (Transfer / Sablon)")
         self.chk_rotate = QCheckBox("Rotate 180 Degrees")
 
@@ -357,6 +358,7 @@ class L121Panel(QMainWindow):
         form.addRow("Paper Size:", self.cb_paper)
         form.addRow("Color:", self.cb_color)
         form.addRow("Color Mode:", self.cb_cmode)
+        form.addRow("", self.chk_thick)
         form.addRow("", self.chk_mirror)
         form.addRow("", self.chk_rotate)
         lay.addWidget(form_box)
@@ -378,6 +380,7 @@ class L121Panel(QMainWindow):
             "-o", f"PageSize={self.cb_paper.currentData()}",
             "-o", f"Color={self.cb_color.currentData()}",
             "-o", f"CorrectionColor={self.cb_cmode.currentData()}",
+            "-o", f"ThickPaper={'On' if self.chk_thick.isChecked() else 'Off'}",
             "-o", f"MirrorImage={'On' if self.chk_mirror.isChecked() else 'Off'}",
             "-o", f"Rotate180={'On' if self.chk_rotate.isChecked() else 'Off'}",
         ]
@@ -406,6 +409,8 @@ class L121Panel(QMainWindow):
                 elif key == "CorrectionColor":
                     idx = self.cb_cmode.findData(active)
                     if idx >= 0: self.cb_cmode.setCurrentIndex(idx)
+                elif key == "ThickPaper":
+                    self.chk_thick.setChecked(active == "On")
                 elif key == "MirrorImage":
                     self.chk_mirror.setChecked(active == "On")
                 elif key == "Rotate180":

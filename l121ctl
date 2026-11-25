@@ -421,6 +421,28 @@ def cmd_align(args):
         print("Head alignment values written & saved to EEPROM.")
 
 
+def cmd_test_thick(_args):
+    """Send a nozzle check with Thick Paper / Slow Feed / Wide Gap / Relaxed PE REMOTE1 flags."""
+    nozzle = find_asset("NOZZLE.bin").read_bytes()
+    thick_seq = (
+        b"PH\x02\x00\x00\x01"
+        b"SN\x03\x00\x00\x01\x01"
+        b"SN\x03\x00\x00\x00\x01"
+        b"PC\x02\x00\x00\x00"
+    )
+    marker = b"\x1b\x00\x00\x00"
+    idx = nozzle.find(marker)
+    payload = (nozzle[:idx] + thick_seq + nozzle[idx:]) if idx != -1 else nozzle
+    print("Sending Thick-Paper Test (PH=1, SN_Gap=1, SN_Mech=1, PC=0 + Nozzle Check)...")
+    usb = LibUSB()
+    try:
+        usb.open()
+        usb.bulk_write(payload, timeout_ms=15000)
+    finally:
+        usb.close()
+    print("Done. Check if 220gsm paper fed smoothly without thinning the leading edge.")
+
+
 def cmd_raw(args):
     data = Path(args.file).read_bytes()
     usb = LibUSB()
@@ -455,6 +477,8 @@ def main():
     pa.add_argument("--set-gap", nargs=5, type=int, metavar=("P1", "P2", "P3", "P4", "P5"),
                     help="Write 5 alignment choices (P1:1-5, P2..P5:1-7) to EEPROM")
     pa.set_defaults(func=cmd_align)
+
+    sub.add_parser("test-thick", help="Test 220gsm Thick Paper / Slow Feed mode (injects PH/SN/PC)").set_defaults(func=cmd_test_thick)
 
     pr = sub.add_parser("raw", help="Send raw ESC/P2 or REMOTE1 binary payload")
     pr.add_argument("file", help="Path to raw file")

@@ -1,6 +1,6 @@
 pkgname=epson-l121-driver-unlocked
 pkgver=2.60.1.0.1
-pkgrel=4
+pkgrel=5
 pkgdesc="Unlocked native Linux CUPS driver, ICC profile, maintenance CLI (l121ctl), and Qt6 control panel (l121-panel) for Epson L121 / L120 Series"
 arch=('x86_64')
 url="https://download.ebz.epson.net/dsc/search/01/search/?OSC=LX"
