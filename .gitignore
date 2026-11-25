@@ -1,0 +1,8 @@
+src/
+pkg/
+*.pkg.tar.zst
+*.src.rpm
+*.tar.gz
+__pycache__/
+*.pyc
+.DS_Store

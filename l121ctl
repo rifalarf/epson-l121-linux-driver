@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+l121ctl - Native Linux Maintenance & Telemetry CLI for Epson L121 / L120 Series (04b8:005e)
+Uses libusb-1.0 directly via ctypes (no external Python dependencies).
+"""
+
+import argparse
+import ctypes
+import json
+import os
+import struct
+import sys
+import time
+from pathlib import Path
+
+VENDOR_ID = 0x04B8
+PRODUCT_ID = 0x005E
+EP_OUT = 0x04
+EP_IN = 0x83
+
+MAINT_DIRS = [
+    Path("/usr/share/epson-inkjet-printer-filter/maintenance"),
+    Path(__file__).resolve().parent / "assets" / "maintenance",
+]
+STATE_DIR = Path.home() / ".local" / "share" / "l121ctl"
+
+# IEEE 1284.4 (D4) Packet Mode Entry
+D4_ENTER = b"\x00\x00\x00\x1b\x01@EJL 1284.4\n@EJL     \n"
+
+ST_STATES = {
+    0x00: "Error",
+    0x01: "Self-Testing",
+    0x02: "Busy",
+    0x03: "Printing",
+    0x04: "Ready / Idle",
+    0x07: "Cleaning / Charging Ink",
+    0x08: "Initial Ink Charging Not Complete",
+    0x0A: "Turning Off",
+    0x11: "Charging Ink System",
+}
+
+ER_CODES = {
+    0x00: "General / Fatal Error",
+    0x01: "Printer Busy (Another Interface)",
+    0x04: "Paper Jam",
+    0x06: "Paper Out / Incorrect Loading",
+    0x10: "Service Required: Waste Ink Pad Full (End of Service Life)",
+    0x12: "Multi-Page Feed Error",
+    0x4A: "Warning: Waste Ink Pad Nearing End of Service Life",
+}
+
+
+class LibUSB:
+    def __init__(self):
+        self.lib = ctypes.CDLL("libusb-1.0.so.0")
+        self.ctx = ctypes.c_void_p()
+        if self.lib.libusb_init(ctypes.byref(self.ctx)) != 0:
+            raise RuntimeError("Failed to initialize libusb-1.0")
+        self.lib.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
+        self.lib.libusb_error_name.restype = ctypes.c_char_p
+        self.handle = None
+        self.reattach = False
+
+    def open(self, vid=VENDOR_ID, pid=PRODUCT_ID):
+        self.handle = self.lib.libusb_open_device_with_vid_pid(self.ctx, vid, pid)
+        if not self.handle:
+            raise RuntimeError(
+                f"Epson L120/L121 ({vid:04x}:{pid:04x}) not found or permission denied. "
+                "Check USB cable/power or udev permissions (try sudo if udev rule not active yet)."
+            )
+        if self.lib.libusb_kernel_driver_active(self.handle, 0) == 1:
+            if self.lib.libusb_detach_kernel_driver(self.handle, 0) == 0:
+                self.reattach = True
+        rc = self.lib.libusb_claim_interface(self.handle, 0)
+        if rc != 0:
+            err = self.lib.libusb_error_name(rc).decode(errors="replace")
+            raise RuntimeError(f"Failed to claim USB interface 0: {err} (is CUPS currently printing?)")
+
+    def close(self):
+        if self.handle:
+            self.lib.libusb_release_interface(self.handle, 0)
+            if self.reattach:
+                self.lib.libusb_attach_kernel_driver(self.handle, 0)
+            self.lib.libusb_close(self.handle)
+            self.handle = None
+        if self.ctx:
+            self.lib.libusb_exit(self.ctx)
+            self.ctx = None
+
+    def get_device_id(self) -> str:
+        buf = (ctypes.c_ubyte * 1024)()
+        rc = self.lib.libusb_control_transfer(
+            self.handle, 0xA1, 0x00, 0, 0, buf, ctypes.sizeof(buf), 2000
+        )
+        if rc < 2:
+            return ""
+        raw = bytes(buf[:rc])
+        length = struct.unpack_from(">H", raw, 0)[0]
+        return raw[2 : min(rc, length)].decode("ascii", errors="replace")
+
+    def bulk_write(self, data: bytes, timeout_ms=5000):
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset : offset + 4096]
+            cbuf = (ctypes.c_ubyte * len(chunk)).from_buffer_copy(chunk)
+            transferred = ctypes.c_int(0)
+            rc = self.lib.libusb_bulk_transfer(
+                self.handle, EP_OUT, cbuf, len(chunk), ctypes.byref(transferred), timeout_ms
+            )
+            if rc != 0:
+                err = self.lib.libusb_error_name(rc).decode(errors="replace")
+                raise RuntimeError(f"USB bulk write failed: {err}")
+            offset += transferred.value
+
+    def bulk_read(self, size=4096, timeout_ms=2000) -> bytes:
+        buf = (ctypes.c_ubyte * size)()
+        transferred = ctypes.c_int(0)
+        rc = self.lib.libusb_bulk_transfer(
+            self.handle, EP_IN, buf, size, ctypes.byref(transferred), timeout_ms
+        )
+        if rc == -7:  # LIBUSB_ERROR_TIMEOUT
+            return bytes(buf[: transferred.value])
+        if rc != 0:
+            err = self.lib.libusb_error_name(rc).decode(errors="replace")
+            raise RuntimeError(f"USB bulk read failed: {err}")
+        return bytes(buf[: transferred.value])
+
+
+def d4_frame(psid: int, ssid: int, payload: bytes, credit: int = 1, ctrl: int = 0) -> bytes:
+    total_len = 6 + len(payload)
+    return struct.pack(">BBHBB", psid, ssid, total_len, credit, ctrl) + payload
+
+
+def d4_parse_frames(buf: bytes):
+    frames = []
+    pos = 0
+    while pos + 6 <= len(buf):
+        psid, ssid, length, credit, ctrl = struct.unpack_from(">BBHBB", buf, pos)
+        if length < 6 or pos + length > len(buf):
+            break
+        frames.append((psid, ssid, credit, ctrl, buf[pos + 6 : pos + length]))
+        pos += length
+    return frames
+
+
+def d4_session_query(usb: LibUSB, cmd_payload: bytes) -> bytes:
+    # Enter IEEE 1284.4 packet mode
+    usb.bulk_write(D4_ENTER)
+    # D4 Init (psid=0, ssid=0, cmd=0x00, rev=0x10)
+    usb.bulk_write(d4_frame(0, 0, b"\x00\x10", credit=0))
+    resp = usb.bulk_read(1024, 1500)
+    # OpenChannel for EPSON-CTRL (service name "EPSON-CTRL")
+    svc = b"EPSON-CTRL"
+    open_req = struct.pack(">BBBB", 0x04, 0x40, 0x40, 0x00) + struct.pack(">HHH", 512, 512, 1) + svc
+    # Actually D4 OpenChannel format: cmd(0x04), psid, ssid, max_psize(2), max_ssize(2), max_credit(2) or service string
+    # Let's try standard Epson D4 socket 0x40 / 0x01 or direct @BDC ST2 first
+    return resp
+
+
+def query_st2_status(usb: LibUSB) -> dict:
+    """Query @BDC ST2 status via D4 or direct bulk."""
+    # Standard Epson D4 Init + GetSocketID("EPSON-CTRL") + OpenChannel + Send ST2
+    # Wait: Epson printers also respond to D4 Init -> OpenChannel(0x04, 0x00, 0x01...) or direct REMOTE1
+    # Let's send D4 Init, read reply, and parse any @BDC ST2 payload returned.
+    usb.bulk_write(b"\x00\x00\x00\x1b\x01@EJL 1284.4\n@EJL     \n")
+    # D4 Init packet: 00 00 00 07 00 00 00 10 (len=8? 6+2=8, rev=0x10)
+    usb.bulk_write(d4_frame(0, 0, b"\x00\x10", credit=0))
+    init_reply = usb.bulk_read(512, 1500)
+
+    # Try GetSocketID for EPSON-CTRL (cmd 0x09 + service name)
+    usb.bulk_write(d4_frame(0, 0, b"\x09EPSON-CTRL", credit=0))
+    sock_reply = usb.bulk_read(512, 1500)
+    ctrl_sock = 0x01
+    for psid, ssid, credit, ctrl, pay in d4_parse_frames(sock_reply):
+        if len(pay) >= 3 and pay[0] == 0x89 and pay[1] == 0x00:
+            ctrl_sock = pay[2]
+
+    # OpenChannel (cmd 0x04: psid=ctrl_sock, ssid=ctrl_sock, pri_rx=1024, sec_rx=1024, credit=4)
+    open_pay = struct.pack(">BBBBHHB", 0x04, ctrl_sock, ctrl_sock, 0x00, 1024, 1024, 4)
+    # Standard IEEE 1284.4 OpenChannel payload: 04, psid, ssid, p2s_max(2), s2p_max(2), credit(1..2)
+    open_pay = struct.pack(">BBBHBB", 0x04, ctrl_sock, ctrl_sock, 1024, 1, 4)
+    usb.bulk_write(d4_frame(0, 0, struct.pack(">BBBHHB", 0x04, ctrl_sock, ctrl_sock, 1024, 1024, 4), credit=0))
+    open_reply = usb.bulk_read(512, 1500)
+
+    # Send st\x02\x00\x00\x01 (EPSON-CTRL status request) on ctrl_sock
+    usb.bulk_write(d4_frame(ctrl_sock, ctrl_sock, b"st\x01\x00\x01", credit=4))
+    st_reply = usb.bulk_read(1024, 1500)
+    if not st_reply:
+        # Fallback: direct REMOTE1 ST command
+        usb.bulk_write(b"\x1b@\x1b@\x1b(R\x08\x00\x00REMOTE1ST\x02\x00\x00\x01\x1b\x00\x00\x00")
+        st_reply = usb.bulk_read(1024, 1500)
+
+    # Close D4 cleanly (Exit = 0x08)
+    try:
+        usb.bulk_write(d4_frame(0, 0, b"\x08", credit=0))
+        usb.bulk_read(256, 500)
+    except Exception:
+        pass
+
+    return {
+        "init_reply": init_reply.hex(),
+        "sock_reply": sock_reply.hex(),
+        "open_reply": open_reply.hex(),
+        "st_reply_raw": st_reply,
+    }
+
+
+def parse_bdc_st2(raw: bytes) -> dict:
+    idx = raw.find(b"@BDC ST2\r\n")
+    if idx == -1:
+        return {}
+    body = raw[idx + 10 :]
+    if len(body) < 2:
+        return {}
+    total_len = struct.unpack_from("<H", body, 0)[0]
+    tlv_data = body[2 : 2 + total_len]
+    pos = 0
+    result = {}
+    while pos + 2 <= len(tlv_data):
+        tag = tlv_data[pos]
+        tlen = tlv_data[pos + 1]
+        val = tlv_data[pos + 2 : pos + 2 + tlen]
+        pos += 2 + tlen
+        if tag == 0x01 and len(val) >= 1:
+            code = val[0]
+            result["state_code"] = code
+            result["state"] = ST_STATES.get(code, f"Unknown (0x{code:02x})")
+        elif tag == 0x02 and len(val) >= 1:
+            code = val[0]
+            result["error_code"] = code
+            result["error"] = ER_CODES.get(code, f"Error 0x{code:02x}")
+        elif tag == 0x04 and len(val) >= 1:
+            result["self_print_code"] = val[0]
+        elif tag == 0x0F:
+            # Ink info entries (cartridge/tank code, color, level)
+            inks = []
+            for k in range(0, len(val) - 2, 3):
+                c_map = {0x01: "Black", 0x03: "Cyan", 0x04: "Magenta", 0x05: "Yellow"}
+                inks.append({
+                    "slot": val[k],
+                    "color": c_map.get(val[k], f"0x{val[k]:02x}"),
+                    "status_byte": val[k + 1],
+                    "level_raw": val[k + 2],
+                })
+            result["inks"] = inks
+        elif tag == 0x19:
+            result["ink_pad_raw"] = val.hex()
+        elif tag == 0x37:
+            result["maintenance_header37"] = val.hex()
+        else:
+            result[f"tag_0x{tag:02x}"] = val.hex()
+    return result
+
+
+def find_asset(name: str) -> Path:
+    for d in MAINT_DIRS:
+        p = d / name
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"Maintenance payload {name} not found in {MAINT_DIRS}")
+
+
+def send_payload(name: str):
+    path = find_asset(name)
+    data = path.read_bytes()
+    usb = LibUSB()
+    try:
+        usb.open()
+        usb.bulk_write(data, timeout_ms=15000)
+    finally:
+        usb.close()
+
+
+def cmd_status(args):
+    usb = LibUSB()
+    try:
+        usb.open()
+        dev_id = usb.get_device_id()
+        st_info = query_st2_status(usb)
+    finally:
+        usb.close()
+
+    parsed = parse_bdc_st2(st_info["st_reply_raw"])
+    if args.json:
+        out = {
+            "ieee1284_id": dev_id,
+            "parsed_st2": parsed,
+            "raw_hex": st_info["st_reply_raw"].hex(),
+        }
+        print(json.dumps(out, indent=2))
+        return
+
+    print("=== Epson L121 / L120 Series Status ===")
+    print(f"USB Device : {VENDOR_ID:04x}:{PRODUCT_ID:04x}")
+    if dev_id:
+        for kv in dev_id.split(";"):
+            if kv.strip():
+                print(f"  {kv.strip()}")
+    if parsed:
+        print(f"State      : {parsed.get('state', 'Unknown')}")
+        if "error" in parsed:
+            print(f"Error      : {parsed['error']}")
+        if "inks" in parsed:
+            print("Ink Tanks  :")
+            for ink in parsed["inks"]:
+                print(f"  - {ink['color']:8s}: raw={ink['level_raw']} (status=0x{ink['status_byte']:02x})")
+        if "maintenance_header37" in parsed:
+            print(f"Ink Pad TLV: {parsed['maintenance_header37']}")
+    else:
+        print("ST2 Reply  : (no @BDC ST2 frame; raw=" + (st_info["st_reply_raw"].hex() or "<empty>") + ")")
+
+
+def cmd_nozzle_check(_args):
+    print("Sending Nozzle Check pattern (also prints FW version, Serial & Page Count)...")
+    send_payload("NOZZLE.bin")
+    print("Done. Check printed page.")
+
+
+def cmd_clean(_args):
+    print("Starting Standard Head Cleaning...")
+    send_payload("CLEANING.bin")
+    print("Command sent. Wait until printer power LED stops blinking.")
+
+
+def cmd_power_clean(args):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = STATE_DIR / "last_power_clean"
+    now = time.time()
+    if stamp.exists() and not args.force:
+        elapsed = now - float(stamp.read_text().strip())
+        if elapsed < 43200:
+            rem_h = (43200 - elapsed) / 3600.0
+            print(
+                f"Warning: Epson recommends waiting 12 hours between Power Ink Flushes ({rem_h:.1f}h remaining).\n"
+                "Re-run with --force if you still want to proceed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    if not args.yes:
+        ans = input("Power Ink Flushing consumes significant ink. Continue? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("Aborted.")
+            return
+    print("Starting Power Ink Flushing...")
+    send_payload("PIFLUSHING.bin")
+    stamp.write_text(str(now))
+    print("Command sent. Wait until power LED stops blinking.")
+
+
+def cmd_roller_clean(_args):
+    print("Starting Paper Guide / Roller Cleaning...")
+    send_payload("PGCLEANING.bin")
+    print("Command sent.")
+
+
+def cmd_align(args):
+    if args.step == "1":
+        print("Printing Head Alignment Step 1 (Bi-D / VSD patterns)...")
+        send_payload("GAP1.bin")
+    elif args.step == "2-a4":
+        print("Printing Head Alignment Step 2 (PF Adjust - A4)...")
+        send_payload("GAP2_A4.bin")
+    elif args.step == "2-letter":
+        print("Printing Head Alignment Step 2 (PF Adjust - Letter)...")
+        send_payload("GAP2_LETTER.bin")
+    elif args.set_gap:
+        # 5 values from UTINFO.XML Popup 1..5
+        vals = args.set_gap
+        p1 = {1: 0xFC, 2: 0xFE, 3: 0x00, 4: 0x02, 5: 0x04}[vals[0]]
+        p2345 = [{1: 0xFC, 2: 0xFE, 3: 0xFF, 4: 0x00, 5: 0x01, 6: 0x02, 7: 0x04}[v] for v in vals[1:]]
+        hdr = find_asset("GAPSETTINGHEADER.bin").read_bytes()
+        ftr = find_asset("GAPSETTINGFOOTER.bin").read_bytes()
+        cmds = [
+            ("C0000003", p1),
+            ("01000002", p2345[0]),
+            ("01010002", p2345[1]),
+            ("03000002", p2345[2]),
+            ("02000002", p2345[2]),
+            ("03010002", p2345[3]),
+            ("02010002", p2345[3]),
+        ]
+        body = bytearray()
+        for tag, v in cmds:
+            body.extend(b"DD\x06\x00\x00" + bytes.fromhex(tag) + bytes([v]))
+        usb = LibUSB()
+        try:
+            usb.open()
+            usb.bulk_write(hdr + bytes(body) + ftr, timeout_ms=15000)
+        finally:
+            usb.close()
+        print("Head alignment values written & saved to EEPROM.")
+
+
+def cmd_raw(args):
+    data = Path(args.file).read_bytes()
+    usb = LibUSB()
+    try:
+        usb.open()
+        usb.bulk_write(data, timeout_ms=30000)
+    finally:
+        usb.close()
+    print(f"Sent {len(data)} bytes from {args.file}.")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="l121ctl", description="Epson L121 / L120 Series Linux Utility")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    ps = sub.add_parser("status", help="Show printer status, IEEE-1284 ID, and telemetry")
+    ps.add_argument("--json", action="store_true", help="Output JSON")
+    ps.set_defaults(func=cmd_status)
+
+    sub.add_parser("nozzle-check", help="Print nozzle check + firmware & page count").set_defaults(func=cmd_nozzle_check)
+    sub.add_parser("clean", help="Run standard print head cleaning").set_defaults(func=cmd_clean)
+
+    ppc = sub.add_parser("power-clean", help="Run Power Ink Flushing")
+    ppc.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+    ppc.add_argument("--force", action="store_true", help="Ignore 12h cooldown")
+    ppc.set_defaults(func=cmd_power_clean)
+
+    sub.add_parser("roller-clean", help="Run paper guide / roller cleaning").set_defaults(func=cmd_roller_clean)
+
+    pa = sub.add_parser("align", help="Print head alignment patterns or write EEPROM values")
+    pa.add_argument("--step", choices=["1", "2-a4", "2-letter"], help="Print alignment sheet")
+    pa.add_argument("--set-gap", nargs=5, type=int, metavar=("P1", "P2", "P3", "P4", "P5"),
+                    help="Write 5 alignment choices (P1:1-5, P2..P5:1-7) to EEPROM")
+    pa.set_defaults(func=cmd_align)
+
+    pr = sub.add_parser("raw", help="Send raw ESC/P2 or REMOTE1 binary payload")
+    pr.add_argument("file", help="Path to raw file")
+    pr.set_defaults(func=cmd_raw)
+
+    args = p.parse_args()
+    if args.cmd == "align" and not args.step and not args.set_gap:
+        pa.error("Specify --step or --set-gap")
+    try:
+        args.func(args)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

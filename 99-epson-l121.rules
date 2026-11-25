@@ -1,0 +1,2 @@
+# Seiko Epson L120 / L121 Series (04b8:005e) - allow non-root access for l121ctl & CUPS
+SUBSYSTEM=="usb", ATTR{idVendor}=="04b8", ATTR{idProduct}=="005e", MODE="0660", GROUP="lp", TAG+="uaccess"
