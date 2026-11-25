@@ -156,7 +156,13 @@ class L121Panel(QMainWindow):
     def _set_printer_thumb(self, fname: str):
         p = find_ui_asset(fname)
         if p:
-            self.printer_thumb.setPixmap(QPixmap(p).scaled(60, 48, Qt.TransformationMode.SmoothTransformation))
+            self.printer_thumb.setPixmap(
+                QPixmap(p).scaled(
+                    60, 48,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
 
     def _set_badge(self, text: str, bg: str):
         self.badge.setText(text)
