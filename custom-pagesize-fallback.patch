@@ -1,0 +1,23 @@
+--- a/src/raster_to_epson.c
++++ b/src/raster_to_epson.c
+@@ -308,6 +308,20 @@
+ 				}
+ 			}
+ 
++			char customBuf[64];
++			if ((strcmp(option, "PageSize") == 0 || strcmp(option, "OutputPaper") == 0)
++				&& strcmp(choice, "A4") != 0
++				&& strcmp(choice, "Letter") != 0
++				&& strcmp(choice, "Legal") != 0
++				&& strncasecmp(choice, "Custom.", 7) != 0) {
++				ppd_size_t *sz = ppdPageSize(PPD, choice);
++				if (sz != NULL && sz->width > 0 && sz->length > 0) {
++					snprintf(customBuf, sizeof(customBuf), "Custom.%.2fx%.2fmm",
++						sz->width * 25.4 / 72.0, sz->length * 25.4 / 72.0);
++					choice = customBuf;
++				}
++			}
++
+ 			debuglog(("Option=%s Choice=%s", option, choice));
+ 			error = epcgSetPrintOption(option, choice);
+ 			if (error) {

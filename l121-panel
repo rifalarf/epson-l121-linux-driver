@@ -116,9 +116,12 @@ class L121Panel(QMainWindow):
         btn_row = QHBoxLayout()
         self.btn_refresh = QPushButton("Refresh Status")
         self.btn_refresh.clicked.connect(self.refresh_status)
+        self.btn_enable = QPushButton("Enable Queue")
+        self.btn_enable.clicked.connect(self.enable_queue)
         self.btn_cancel = QPushButton("Cancel Stuck Jobs")
         self.btn_cancel.clicked.connect(self.cancel_jobs)
         btn_row.addWidget(self.btn_refresh)
+        btn_row.addWidget(self.btn_enable)
         btn_row.addWidget(self.btn_cancel)
         status_lay.addLayout(btn_row)
         root.addWidget(status_box)
@@ -222,6 +225,15 @@ class L121Panel(QMainWindow):
                 f"Cleared queue {self.queue_name}." if rc == 0 else f"Cancel failed: {e.strip()}"
             ),
             f"Canceling jobs on {self.queue_name}...",
+        )
+
+    def enable_queue(self):
+        self._run_cmd(
+            ["cupsenable", self.queue_name],
+            lambda rc, _o, e: self.footer.setText(
+                f"Queue {self.queue_name} enabled." if rc == 0 else f"Enable failed (try sudo cupsenable {self.queue_name}): {e.strip()}"
+            ),
+            f"Enabling CUPS queue {self.queue_name}...",
         )
 
     # --- Tab 1: Maintenance ---

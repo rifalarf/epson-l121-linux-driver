@@ -1,6 +1,6 @@
 pkgname=epson-l121-driver-unlocked
 pkgver=2.60.1.0.1
-pkgrel=3
+pkgrel=4
 pkgdesc="Unlocked native Linux CUPS driver, ICC profile, maintenance CLI (l121ctl), and Qt6 control panel (l121-panel) for Epson L121 / L120 Series"
 arch=('x86_64')
 url="https://download.ebz.epson.net/dsc/search/01/search/?OSC=LX"
@@ -21,6 +21,7 @@ prepare() {
   bsdtar -xzf epson-inkjet-printer-filter-1.0.2.tar.gz
 
   cd "${srcdir}/epson-inkjet-printer-filter-1.0.2"
+  patch -Np1 -i "${startdir}/custom-pagesize-fallback.patch"
   sed -i 's|CORE_LIBRARY_PATH=${prefix}/lib"$LSB_ARCH"|CORE_LIBRARY_PATH=/usr/lib|' configure.ac
   sed -i 's|CORE_RESOURCE_PATH=${prefix}/resource|CORE_RESOURCE_PATH=/usr/share/epson-inkjet-printer-filter/resource|' configure.ac
   sed -i 's|CFLAGS=-O2|CFLAGS="${CFLAGS:-"-O2"}"|' configure.ac
